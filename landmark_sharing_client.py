@@ -3,47 +3,39 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import socketio
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QListWidget
-from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
-from PyQt5.QtCore import QTimer, Qt, QRectF, QPointF
-
-class Particle:
-    def __init__(self, x, y):
-        self.pos = QPointF(x, y)
-        self.velocity = QPointF(np.random.uniform(-1, 1), np.random.uniform(-1, 1))
-        self.life = 1.0
-        self.color = QColor(255, 255, 255)
-
-    def update(self):
-        self.pos += self.velocity
-        self.life -= 0.2
-        self.color.setAlphaF(self.life)
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLineEdit, QListWidget
+from PyQt5.QtGui import QPainter, QPen, QColor, QFont
+from PyQt5.QtCore import QTimer, Qt, QRectF
 
 class LandmarkVisualizerWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Landmark Visualizer')
         self.setGeometry(100, 100, 800, 600)
-        self.landmarks = {'Left': [], 'Right': []}
+        self.landmarks = []
         self.received_landmarks = []
-        self.particles = []
+        self.winner = None
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Draw own landmarks
-        self.draw_landmarks(painter, self.landmarks['Left'], Qt.green)
-        self.draw_landmarks(painter, self.landmarks['Right'], Qt.green)
+        # Draw own landmarks (mirrored)
+        self.draw_landmarks(painter, self.landmarks, Qt.green)
 
         # Draw received landmarks
         self.draw_landmarks(painter, self.received_landmarks, Qt.blue)
 
-        # Draw particles
-        for particle in self.particles:
-            painter.setBrush(QBrush(particle.color))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(particle.pos, 3, 3)
+        # Draw winner text if applicable
+        if self.winner:
+            painter.setFont(QFont('Arial', 20))
+            painter.setPen(Qt.red)
+            if self.winner == 'self':
+                text_rect = QRectF(10, self.height() - 40, self.width() - 20, 30)
+                painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignBottom, "You won!")
+            elif self.winner == 'opponent':
+                text_rect = QRectF(10, 10, self.width() - 20, 30)
+                painter.drawText(text_rect, Qt.AlignRight | Qt.AlignTop, "Opponent won!")
 
     def draw_landmarks(self, painter, landmarks, color):
         if not landmarks:
@@ -53,14 +45,8 @@ class LandmarkVisualizerWindow(QWidget):
         painter.setPen(pen)
 
         for landmark in landmarks:
-            x, y = int((1 - landmark['x']) * self.width()), int(landmark['y'] * self.height())
+            x, y = int(landmark['x'] * self.width()), int(landmark['y'] * self.height())
             painter.drawEllipse(x - 5, y - 5, 10, 10)
-
-            # Check for collision with received landmarks
-            for received_landmark in self.received_landmarks:
-                rx, ry = int((1 - received_landmark['x']) * self.width()), int(received_landmark['y'] * self.height())
-                if abs(x - rx) < 10 and abs(y - ry) < 10:
-                    self.create_particles(x, y)
 
         connections = [
             (0, 1), (1, 2), (2, 3), (3, 4),  # Thumb
@@ -71,27 +57,21 @@ class LandmarkVisualizerWindow(QWidget):
         ]
 
         for connection in connections:
-            start_point = (int((1 - landmarks[connection[0]]['x']) * self.width()),
+            start_point = (int(landmarks[connection[0]]['x'] * self.width()),
                            int(landmarks[connection[0]]['y'] * self.height()))
-            end_point = (int((1 - landmarks[connection[1]]['x']) * self.width()),
+            end_point = (int(landmarks[connection[1]]['x'] * self.width()),
                          int(landmarks[connection[1]]['y'] * self.height()))
             painter.drawLine(start_point[0], start_point[1], end_point[0], end_point[1])
 
-    def create_particles(self, x, y):
-        for _ in range(10):
-            self.particles.append(Particle(x, y))
-
-    def update_particles(self):
-        self.particles = [p for p in self.particles if p.life > 0]
-        for particle in self.particles:
-            particle.update()
-        self.update()
-
-    def update_landmarks(self, landmarks, hand_type='Left', received=False):
+    def update_landmarks(self, landmarks, received=False):
         if received:
             self.received_landmarks = landmarks
         else:
-            self.landmarks[hand_type] = landmarks
+            self.landmarks = landmarks
+        self.update()
+
+    def set_winner(self, winner):
+        self.winner = winner
         self.update()
 
 class LandmarkSharingApp(QWidget):
@@ -103,7 +83,7 @@ class LandmarkSharingApp(QWidget):
         self.setup_socket_events()
         
         self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(max_num_hands=2)
+        self.hands = self.mp_hands.Hands(max_num_hands=1)
         
         self.cap = cv2.VideoCapture(0)
         self.timer = QTimer(self)
@@ -114,15 +94,9 @@ class LandmarkSharingApp(QWidget):
         self.landmark_visualizer = LandmarkVisualizerWindow()
         self.landmark_visualizer.show()
 
-        # Timer for updating particles
-        self.particle_timer = QTimer(self)
-        self.particle_timer.timeout.connect(self.landmark_visualizer.update_particles)
-        self.particle_timer.start(16)  # 60 FPS
-
     def initUI(self):
         layout = QVBoxLayout()
         
-        # Username input
         self.username_input = QLineEdit(self)
         self.username_input.setPlaceholderText("Enter your username")
         layout.addWidget(self.username_input)
@@ -131,7 +105,6 @@ class LandmarkSharingApp(QWidget):
         self.connect_button.clicked.connect(self.connect_to_server)
         layout.addWidget(self.connect_button)
         
-        # User list
         self.user_list = QListWidget(self)
         self.user_list.itemClicked.connect(self.select_user)
         layout.addWidget(self.user_list)
@@ -159,11 +132,12 @@ class LandmarkSharingApp(QWidget):
         @self.sio.on('landmarks')
         def on_landmarks(data):
             self.landmark_visualizer.update_landmarks(data['landmarks'], received=True)
+            self.check_winner(data['landmarks'] if data['landmarks'] else None)
 
     def connect_to_server(self):
         username = self.username_input.text()
         if username:
-            self.sio.connect('http://localhost:3000')
+            self.sio.connect('http://3.34.70.33:3000')
             self.sio.emit('register', username)
             self.connect_button.setEnabled(False)
             self.username_input.setEnabled(False)
@@ -180,17 +154,60 @@ class LandmarkSharingApp(QWidget):
         results = self.hands.process(image)
 
         if results.multi_hand_landmarks:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                hand_type = handedness.classification[0].label
-                landmarks_list = [
-                    {"x": lm.x, "y": lm.y, "z": lm.z}
-                    for lm in hand_landmarks.landmark
-                ]
-                
-                self.landmark_visualizer.update_landmarks(landmarks_list, hand_type)
+            hand_landmarks = results.multi_hand_landmarks[0]
+            landmarks_list = [
+                {"x": 1 - lm.x, "y": lm.y, "z": lm.z}  # Mirror the x-coordinate
+                for lm in hand_landmarks.landmark
+            ]
+            
+            self.landmark_visualizer.update_landmarks(landmarks_list)
             
             if self.selected_user:
                 self.sio.emit('landmarks', {'targetUser': self.selected_user, 'landmarks': landmarks_list})
+
+    def check_winner(self, opponent_landmarks):
+        if not self.landmarks or not opponent_landmarks:
+            return
+
+        own_gesture = self.recognize_gesture(self.landmarks)
+        opponent_gesture = self.recognize_gesture(opponent_landmarks)
+
+        if own_gesture and opponent_gesture:
+            if own_gesture == opponent_gesture:
+                self.landmark_visualizer.set_winner(None)
+            elif (
+                (own_gesture == 'rock' and opponent_gesture == 'scissors') or
+                (own_gesture == 'paper' and opponent_gesture == 'rock') or
+                (own_gesture == 'scissors' and opponent_gesture == 'paper')
+            ):
+                self.landmark_visualizer.set_winner('self')
+            else:
+                self.landmark_visualizer.set_winner('opponent')
+
+    def recognize_gesture(self, landmarks):
+        # Implement rock-paper-scissors gesture recognition
+        # This is a simplified version and may need refinement
+        thumb_tip = landmarks[4]
+        index_tip = landmarks[8]
+        middle_tip = landmarks[12]
+        ring_tip = landmarks[16]
+        pinky_tip = landmarks[20]
+
+        if (thumb_tip['y'] < index_tip['y'] and
+            index_tip['y'] < middle_tip['y'] and
+            middle_tip['y'] < ring_tip['y'] and
+            ring_tip['y'] < pinky_tip['y']):
+            return 'rock'
+        elif (thumb_tip['y'] > index_tip['y'] and
+              thumb_tip['y'] > middle_tip['y'] and
+              thumb_tip['y'] > ring_tip['y'] and
+              thumb_tip['y'] > pinky_tip['y']):
+            return 'paper'
+        elif (index_tip['y'] < ring_tip['y'] and
+              middle_tip['y'] < ring_tip['y'] and
+              pinky_tip['y'] > ring_tip['y']):
+            return 'scissors'
+        return None
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
